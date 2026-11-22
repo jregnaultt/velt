@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-windows:
+    name: Build & Publish Windows Release
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC environment (rc.exe for app icon)
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Read version from Cargo.toml
+        id: meta
+        run: |
+          $line = Get-Content Cargo.toml | Where-Object { $_ -match '^version\s*=\s*"([^"]+)"' } | Select-Object -First 1
+          if (-not $line -or $line -notmatch '^version\s*=\s*"([^"]+)"') {
+            throw "Could not extract version from Cargo.toml"
+          }
+          $version = $Matches[1]
+          $tag = "v$version"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "Building Velt $tag"
+
+      - name: Run unit tests
+        run: cargo test -- --nocapture
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package release artifacts
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $exeName = "velt-$($env:TAG)-windows-x86_64.exe"
+          $zipName = "velt-windows-x86_64.zip"
+
+          Copy-Item target/release/velt.exe "dist/$exeName"
+          Compress-Archive -Path target/release/velt.exe, README.md, LICENSE -DestinationPath "dist/$zipName" -Force
+
+          $hashes = foreach ($file in @($exeName, $zipName)) {
+            $h = (Get-FileHash -Path "dist/$file" -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$h  $file"
+          }
+          $hashes | Set-Content -Path "dist/SHA256SUMS.txt" -Encoding UTF8
+          Get-ChildItem dist | Format-Table Name, Length -AutoSize
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Velt ${{ steps.meta.outputs.tag }}
+          generate_release_notes: true
+          make_latest: true
+          files: |
+            dist/velt-${{ steps.meta.outputs.tag }}-windows-x86_64.exe
+            dist/velt-windows-x86_64.zip
+            dist/SHA256SUMS.txt
