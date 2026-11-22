@@ -9,7 +9,7 @@ use iced::event::Status;
 use iced::font::Weight;
 use iced::mouse;
 use iced::widget::canvas::{self, Cache, Frame, Geometry, Path, Stroke, Text};
-use iced::widget::{button, column, container, row, stack, text, Space};
+use iced::widget::{button, column, container, row, stack, text, text_input, Space};
 use iced::{Alignment, Color, Element, Font, Length, Padding, Point, Rectangle, Renderer, Size, Theme};
 use std::time::Instant;
 
@@ -25,6 +25,18 @@ pub enum TerminalMessage {
     SelectionEnd(usize),
     DoubleClickWord(usize, usize, usize),
     RightClickPane(usize),
+    CtrlClickCell(usize, usize, usize),
+}
+
+pub struct SearchOverlay<'a, M> {
+    pub query: &'a str,
+    pub input_id: text_input::Id,
+    pub current: usize,
+    pub total: usize,
+    pub on_change: fn(String) -> M,
+    pub on_next: M,
+    pub on_prev: M,
+    pub on_close: M,
 }
 
 #[derive(Default)]
@@ -37,10 +49,13 @@ pub struct TerminalCanvas<'a> {
     pub session: &'a TerminalSession,
     pub pane_index: usize,
     pub focused: bool,
+    pub ctrl_held: bool,
     pub font_size: f32,
     pub font: Font,
     pub palette: Palette,
     pub selection: Option<((usize, usize), (usize, usize))>,
+    pub search_matches: &'a [(usize, usize, usize)],
+    pub active_match: usize,
     pub cache: &'a Cache,
 }
 
@@ -96,6 +111,13 @@ impl<'a> canvas::Program<TerminalMessage> for TerminalCanvas<'a> {
                     if let Some(pos) = cursor.position_in(bounds) {
                         let abs_pos = Point::new(bounds.x + pos.x, bounds.y + pos.y);
                         let (col, row) = self.point_to_cell(bounds, abs_pos);
+                        if self.ctrl_held {
+                            state.dragging = false;
+                            return (
+                                Status::Captured,
+                                Some(TerminalMessage::CtrlClickCell(self.pane_index, col, row)),
+                            );
+                        }
                         let now = Instant::now();
                         if let Some((prev_t, pc, pr)) = state.last_click {
                             if now.duration_since(prev_t).as_millis() <= 350 && pc == col && pr == row
@@ -193,6 +215,8 @@ impl<'a> canvas::Program<TerminalMessage> for TerminalCanvas<'a> {
                 self.font,
                 self.palette,
                 self.selection,
+                self.search_matches,
+                self.active_match,
             );
         });
         vec![geometry]
@@ -204,7 +228,14 @@ impl<'a> canvas::Program<TerminalMessage> for TerminalCanvas<'a> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
-        if cursor.is_over(bounds) {
+        if let Some(pos) = cursor.position_in(bounds) {
+            if self.ctrl_held {
+                let abs_pos = Point::new(bounds.x + pos.x, bounds.y + pos.y);
+                let (col, row) = self.point_to_cell(bounds, abs_pos);
+                if self.session.url_at_cell(col, row).is_some() {
+                    return mouse::Interaction::Pointer;
+                }
+            }
             mouse::Interaction::Text
         } else {
             mouse::Interaction::default()
@@ -250,6 +281,8 @@ fn draw_term(
     base_font: Font,
     palette: Palette,
     selection: Option<((usize, usize), (usize, usize))>,
+    search_matches: &[(usize, usize, usize)],
+    active_match: usize,
 ) {
     frame.fill_rectangle(Point::ORIGIN, size, palette.bg);
 
@@ -278,6 +311,21 @@ fn draw_term(
                     }
                 }
             }
+        }
+    }
+
+    // Draw Ctrl+F search highlights
+    for (idx, &(row_idx, start_c, end_c)) in search_matches.iter().enumerate() {
+        if row_idx < screen_lines.max(0) as usize && start_c <= end_c && end_c < cols {
+            let sx = PADDING_X + start_c as f32 * char_width;
+            let sy = PADDING_Y + row_idx as f32 * line_height;
+            let w = (end_c - start_c + 1) as f32 * char_width;
+            let color = if idx == active_match {
+                Color::from_rgba8(0xEA, 0x58, 0x0C, 0.68)
+            } else {
+                Color::from_rgba8(0xF5, 0x9E, 0x0B, 0.32)
+            };
+            frame.fill_rectangle(Point::new(sx, sy), Size::new(w, line_height), color);
         }
     }
 
@@ -468,10 +516,14 @@ pub fn view_terminal_pane<'a, M: 'a + Clone>(
     session: &'a TerminalSession,
     pane_index: usize,
     focused: bool,
+    ctrl_held: bool,
     font_size: f32,
     font: Font,
     term_theme: TerminalTheme,
     selection: Option<((usize, usize), (usize, usize))>,
+    search_matches: &'a [(usize, usize, usize)],
+    active_match: usize,
+    search_overlay: Option<SearchOverlay<'a, M>>,
     toast: Option<&'a str>,
     cache: &'a Cache,
     map_msg: fn(TerminalMessage) -> M,
@@ -483,10 +535,13 @@ pub fn view_terminal_pane<'a, M: 'a + Clone>(
         session,
         pane_index,
         focused,
+        ctrl_held,
         font_size,
         font,
         palette,
         selection,
+        search_matches,
+        active_match,
         cache,
     })
     .width(Length::Fill)
@@ -589,13 +644,52 @@ pub fn view_terminal_pane<'a, M: 'a + Clone>(
     .align_y(Alignment::Center)
     .style(theme::top_bar_style);
 
-    container(
-        column![terminal_area, hud_bar]
-            .width(Length::Fill)
-            .height(Length::Fill),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .style(theme::pane_container_style(focused))
-    .into()
+    let mut pane_col = column![].width(Length::Fill).height(Length::Fill);
+    if let Some(so) = search_overlay {
+        let count_text = if so.total == 0 {
+            "0/0".to_string()
+        } else {
+            format!("{}/{}", so.current + 1, so.total)
+        };
+        let search_bar = container(
+            row![
+                text("Find:").size(11).color(theme::TEXT_MUTED),
+                text_input("Search visible output...", so.query)
+                    .id(so.input_id)
+                    .size(12)
+                    .padding([4, 8])
+                    .width(240)
+                    .style(theme::search_input_style)
+                    .on_input(so.on_change)
+                    .on_submit(so.on_next.clone()),
+                text(count_text).size(11).color(theme::TEXT_MUTED),
+                button(text("<").size(11))
+                    .padding([3, 8])
+                    .style(theme::card_button_style(false))
+                    .on_press(so.on_prev),
+                button(text(">").size(11))
+                    .padding([3, 8])
+                    .style(theme::card_button_style(false))
+                    .on_press(so.on_next),
+                Space::with_width(Length::Fill),
+                button(text("x").size(11).color(theme::TEXT_MUTED))
+                    .padding([3, 8])
+                    .style(theme::ghost_button_style(false))
+                    .on_press(so.on_close),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .padding([5, 10]),
+        )
+        .width(Length::Fill)
+        .style(theme::top_bar_style);
+        pane_col = pane_col.push(search_bar);
+    }
+    pane_col = pane_col.push(terminal_area).push(hud_bar);
+
+    container(pane_col)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(theme::pane_container_style(focused))
+        .into()
 }

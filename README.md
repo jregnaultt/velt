@@ -27,6 +27,11 @@
 
 Modern AI-assisted development deserves a terminal that feels instantaneous, respects your RAM, and unifies your **shells**, **AI agents**, and **Jira / Bitbucket / GitHub** workflow in one native GPU window.
 
+![Velt — Agent usage dashboard](assets/screenshots/agent-usage.png)
+*Velt's `Agent usage` dashboard rendering real local AI logs on GPU.*
+
+### Layout overview
+
 ```text
 +-----------------------------------------------------------------------------------+
 | [=]  * bash 1   * wsl 2                         +  Cmd  || Split  AGY Work Usage Options |
@@ -67,6 +72,7 @@ flowchart LR
 - **Flexible Split Panes:** Side-by-side (`Horizontal`) or Top/Bottom (`Vertical`) splits via `|| Split` or `Ctrl+K`.
 - **Smart Bottom HUD:** Displays active shell, project folder, live Git branch (`.git/HEAD`), detected tech stack (`Rust`, `Laravel`, `PHP`, `TS`, `Node`, `Python`, `Go`), and grid dimensions (`cols x rows`).
 - **Mouse Selection & Clipboard:** Drag to select, double-click to select word, `Ctrl+Shift+C` to copy, `Ctrl+Shift+V` to paste, and smart right-click (copies when text is selected, pastes otherwise).
+- **In-Terminal Search & Clickable URLs:** Press `Ctrl+F` to highlight matches with next/prev navigation, and `Ctrl+Click` any `http://` or `https://` URL to open it directly in your browser.
 - **Themes & Crisp Fonts:** Auto-detects `Cascadia Mono`, `JetBrains Mono`, or `Consolas` with **Midterm Dark**, **Tokyo Night**, and **Catppuccin Mocha** themes.
 - **Command Palette (`Ctrl+K`):** Quick-launch shells, toggle split layouts, run Git snippets, or jump to any hub.
 
@@ -104,7 +110,25 @@ flowchart LR
 | `Ctrl+Shift+A` | Toggle **Antigravity Hub** |
 | `Ctrl+,` | Open **Options & Themes** |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy selection / Paste clipboard |
-| `Esc` | Close active overlay |
+| `Ctrl+F` | Find in visible terminal output (`Enter`/`>` next, `<` prev, `Esc` close) |
+| `Ctrl+Click` | Open URL under cursor in default browser |
+| `Esc` | Close active overlay / search bar |
+
+---
+
+## Benchmarks
+
+Measured locally on **Windows** (`release` build, single `bash` tab at idle):
+
+- **Test machine:** `Intel(R) Core(TM) i3-10110U CPU @ 2.10GHz` (4 logical cores) · `Intel(R) UHD Graphics`
+- **Standalone binary size:** **10.03 MB** (`10,518,016` bytes)
+
+| Backend | Cold Start (to window) | Idle Working Set RAM | Idle Private RAM | Idle CPU (3s window) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Vulkan GPU** *(default)* | `221 ms` | `111.3 MB` | `70.0 MB` | `1.82%` |
+| **tiny-skia** *(software)* | `81 ms` | `40.5 MB` | `25.8 MB` | `1.17%` |
+
+> **Methodology:** Cold start measures `Start-Process` until a non-zero `MainWindowHandle` appears; RAM and CPU are sampled via PowerShell `Get-Process` (`WorkingSet64`, `PrivateMemorySize64`, and `TotalProcessorTime` delta over a 3-second idle window). Dedicated GPU VRAM is not yet measured here and is planned for the `v0.5` built-in benchmark suite.
 
 ---
 
@@ -148,11 +172,39 @@ Run the generated binary:
 
 ## Roadmap
 
+### Completed (`v0.1`)
 - [x] Native GPU terminal with ConPTY, splits, themes & mouse selection
 - [x] Real-time AI agent scanner & `Agent usage` GPU charts (`Today` hourly + multi-day)
 - [x] `Antigravity Hub` (2.0 live log explorer + Python SDK chat)
 - [x] `Work Hub` (Jira Cloud + Bitbucket Cloud + GitHub)
-- [ ] In-terminal search (`Ctrl+F`) & clickable URLs (`Ctrl+Click`)
+- [x] In-terminal search (`Ctrl+F`) & clickable URLs (`Ctrl+Click`)
+
+### `v0.2` — Terminal Power
+- [ ] Scrollback-wide search & regex search mode
+- [ ] Tab drag-to-reorder & inline tab renaming
+- [ ] User-configurable keybindings (`~/.velt/config.json`)
+- [ ] Font ligatures support & Sixel / Kitty image protocol
+- [ ] Automatic session & split layout restore on restart
+
+### `v0.3` — AI & Agent Superpowers
+- [ ] Inline *"Explain this error"* action via Antigravity SDK
+- [ ] Live per-tab agent detection (Claude Code / Codex / Gemini CLI running inside a pane)
+- [ ] Cost estimation per model & CSV/JSON usage export
+- [ ] Live streaming token ticker in the bottom HUD
+
+### `v0.4` — Work & Team Hub
+- [ ] Jira issue transitions & comment posting directly from Velt
+- [ ] Built-in PR diff viewer & CI/pipeline status badges
+- [ ] Bitbucket & GitHub notifications feed + branch-to-ticket auto-linking
+
+### `v0.5` — Performance & Benchmarks
+- [ ] Built-in `velt --bench` suite (RAM, CPU, GPU VRAM, and frame time)
+- [ ] PTY throughput benchmark (`cat` large stream MB/s) & input latency profiler
+- [ ] Automated CI benchmark regression tracking & comparison table (vs. Windows Terminal, Warp, WezTerm, Alacritty)
+
+### `v0.6` — Cross-Platform & Remote
+- [ ] Native Linux & macOS builds
+- [ ] Signed Windows installer (`.msi` / `winget`) & auto-updater
 - [ ] Remote Work PCs sync *(Coming soon)*
 
 ---

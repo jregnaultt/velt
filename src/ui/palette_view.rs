@@ -15,6 +15,7 @@ pub enum PaletteAction {
     OpenAgyHub,
     OpenWorkHub,
     OpenSettings,
+    FindInTerminal,
     RunCommand(&'static str),
 }
 
@@ -110,6 +111,12 @@ pub fn view_palette<'a, M: 'a + Clone>(
             hint: "Ctrl+,",
             category: "Config",
             action: PaletteAction::OpenSettings,
+        },
+        PaletteItem {
+            title: "Find in Terminal",
+            hint: "Ctrl+F",
+            category: "Term",
+            action: PaletteAction::FindInTerminal,
         },
         PaletteItem {
             title: "Run: git status",
