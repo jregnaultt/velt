@@ -6,7 +6,7 @@ use crate::ai::scanner::{scan_installed_agents, DetectedAgent};
 use crate::ai::usage::{load_all_usage_events, UsageEvent, UsageRange, UsageReport};
 use crate::config::{AppConfig, ShellKind};
 use crate::pty::{SessionId, TerminalSession};
-use crate::terminal_view::{view_terminal_pane, TerminalMessage};
+use crate::terminal_view::{view_terminal_pane, SearchOverlay, TerminalMessage};
 use crate::theme::{self, detect_terminal_font};
 use crate::ui::agy_view::{view_agy_hub, AgyMessage, AgyTab};
 use crate::ui::palette_view::{view_palette, PaletteAction};
@@ -78,8 +78,30 @@ pub enum Message {
     RunPaletteAction(PaletteAction),
     Terminal(TerminalMessage),
     JumpToBottom(usize),
+    ModifiersChanged(Modifiers),
+    ToggleTermSearch,
+    TermSearchChanged(String),
+    TermSearchNext,
+    TermSearchPrev,
+    CloseTermSearch,
     KeyboardEvent(Event),
     PasteClipboard(Option<String>),
+    ScreenshotCaptured(String, iced::window::Screenshot),
+}
+
+struct CaptureState {
+    dir: PathBuf,
+    stage: u8,
+    stage_at: Instant,
+    in_flight: bool,
+}
+
+fn capture_window_task(filename: &'static str) -> Task<Message> {
+    iced::window::get_oldest().then(move |opt| match opt {
+        Some(id) => iced::window::screenshot(id)
+            .map(move |shot| Message::ScreenshotCaptured(filename.to_string(), shot)),
+        None => Task::none(),
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +124,12 @@ pub struct TerminalPlus {
     panes: Vec<SessionId>,
     split_direction: SplitDirection,
     focused_pane: usize,
+    ctrl_held: bool,
+    term_search_open: bool,
+    term_search_query: String,
+    term_search_input_id: text_input::Id,
+    term_search_index: usize,
+    term_search_matches: Vec<(usize, usize, usize)>,
     pane_selections: HashMap<usize, ((usize, usize), (usize, usize))>,
     status_toast: Option<(String, Instant)>,
     sidebar_visible: bool,
@@ -138,6 +166,7 @@ pub struct TerminalPlus {
     last_dirty_versions: HashMap<SessionId, u64>,
     last_context_refresh: Instant,
     default_cwd: PathBuf,
+    capture_state: Option<CaptureState>,
 }
 
 impl TerminalPlus {
@@ -165,6 +194,12 @@ impl TerminalPlus {
             panes: Vec::new(),
             split_direction: SplitDirection::Horizontal,
             focused_pane: 0,
+            ctrl_held: false,
+            term_search_open: false,
+            term_search_query: String::new(),
+            term_search_input_id: text_input::Id::unique(),
+            term_search_index: 0,
+            term_search_matches: Vec::new(),
             pane_selections: HashMap::new(),
             status_toast: None,
             sidebar_visible: true,
@@ -201,6 +236,12 @@ impl TerminalPlus {
             last_dirty_versions: HashMap::new(),
             last_context_refresh: Instant::now(),
             default_cwd,
+            capture_state: std::env::var_os("VELT_CAPTURE_DIR").map(|dir| CaptureState {
+                dir: PathBuf::from(dir),
+                stage: 0,
+                stage_at: Instant::now(),
+                in_flight: false,
+            }),
         };
 
         let shell = app.config.default_shell;
@@ -376,6 +417,23 @@ impl TerminalPlus {
         }
     }
 
+    fn refresh_term_search_matches(&mut self) {
+        if !self.term_search_open {
+            self.term_search_matches.clear();
+            return;
+        }
+        self.term_search_matches = self
+            .active_session_id()
+            .and_then(|id| self.session_by_id(id))
+            .map(|s| s.find_visible_matches(&self.term_search_query))
+            .unwrap_or_default();
+        if self.term_search_matches.is_empty() {
+            self.term_search_index = 0;
+        } else if self.term_search_index >= self.term_search_matches.len() {
+            self.term_search_index = 0;
+        }
+    }
+
     fn ensure_split(&mut self, dir: SplitDirection) {
         self.split_direction = dir;
         if self.panes.len() >= 2 {
@@ -517,6 +575,7 @@ impl TerminalPlus {
                         }
                     }
                 }
+                let mut refresh_search = false;
                 for (pane_idx, pane_id) in self.panes.iter().enumerate() {
                     if let Some(session) = self.session_by_id(*pane_id) {
                         let v = session.dirty_version();
@@ -526,6 +585,46 @@ impl TerminalPlus {
                             if let Some(cache) = self.canvas_caches.get(pane_idx) {
                                 cache.clear();
                             }
+                            if self.term_search_open && pane_idx == self.focused_pane {
+                                refresh_search = true;
+                            }
+                        }
+                    }
+                }
+                if refresh_search {
+                    self.refresh_term_search_matches();
+                }
+                let mut send_demo_cmd = false;
+                if let Some(cs) = self.capture_state.as_mut() {
+                    if !cs.in_flight {
+                        let elapsed = cs.stage_at.elapsed();
+                        match cs.stage {
+                            0 if elapsed >= Duration::from_millis(900) => {
+                                send_demo_cmd = true;
+                                cs.stage = 1;
+                                cs.stage_at = Instant::now();
+                            }
+                            1 if elapsed >= Duration::from_millis(1600) => {
+                                cs.in_flight = true;
+                                return capture_window_task("terminal.ppm");
+                            }
+                            2 if elapsed >= Duration::from_millis(700) => {
+                                cs.in_flight = true;
+                                return capture_window_task("agent-usage.ppm");
+                            }
+                            3 if elapsed >= Duration::from_millis(600) => {
+                                cs.in_flight = true;
+                                return capture_window_task("command-palette.ppm");
+                            }
+                            4.. => return iced::exit(),
+                            _ => {}
+                        }
+                    }
+                }
+                if send_demo_cmd {
+                    if let Some(id) = self.panes.get(self.focused_pane).copied() {
+                        if let Some(session) = self.session_by_id(id) {
+                            session.write_bytes(b"git status -sb\r");
                         }
                     }
                 }
@@ -1123,6 +1222,12 @@ impl TerminalPlus {
                     PaletteAction::OpenSettings => {
                         self.overlay = ActiveOverlay::Settings;
                     }
+                    PaletteAction::FindInTerminal => {
+                        self.term_search_open = true;
+                        self.refresh_term_search_matches();
+                        self.clear_all_caches();
+                        return text_input::focus(self.term_search_input_id.clone());
+                    }
                     PaletteAction::RunCommand(cmd) => {
                         if let Some(id) = self.active_session_id() {
                             if let Some(session) = self.session_by_id(id) {
@@ -1200,7 +1305,73 @@ impl TerminalPlus {
                         clipboard::read().map(Message::PasteClipboard)
                     }
                 }
+                TerminalMessage::CtrlClickCell(idx, col, row) => {
+                    if let Some(&id) = self.panes.get(idx) {
+                        if let Some(session) = self.session_by_id(id) {
+                            if let Some(url) = session.url_at_cell(col, row) {
+                                open_in_browser(&url);
+                                self.status_toast = Some(("Opened URL!".to_string(), Instant::now()));
+                            }
+                        }
+                    }
+                    Task::none()
+                }
             },
+            Message::ModifiersChanged(mods) => {
+                self.ctrl_held = mods.control();
+                Task::none()
+            }
+            Message::ToggleTermSearch => {
+                if self.overlay != ActiveOverlay::None {
+                    return Task::none();
+                }
+                self.term_search_open = !self.term_search_open;
+                self.term_search_index = 0;
+                self.refresh_term_search_matches();
+                self.clear_all_caches();
+                if self.term_search_open {
+                    text_input::focus(self.term_search_input_id.clone())
+                } else {
+                    Task::none()
+                }
+            }
+            Message::TermSearchChanged(q) => {
+                self.term_search_query = q;
+                self.term_search_index = 0;
+                self.refresh_term_search_matches();
+                self.clear_all_caches();
+                Task::none()
+            }
+            Message::TermSearchNext => {
+                self.refresh_term_search_matches();
+                let count = self.term_search_matches.len();
+                if count > 0 {
+                    self.term_search_index = (self.term_search_index + 1) % count;
+                    self.clear_pane_cache(self.focused_pane);
+                }
+                Task::none()
+            }
+            Message::TermSearchPrev => {
+                self.refresh_term_search_matches();
+                let count = self.term_search_matches.len();
+                if count > 0 {
+                    self.term_search_index = if self.term_search_index == 0 {
+                        count - 1
+                    } else {
+                        self.term_search_index - 1
+                    };
+                    self.clear_pane_cache(self.focused_pane);
+                }
+                Task::none()
+            }
+            Message::CloseTermSearch => {
+                self.term_search_open = false;
+                self.term_search_query.clear();
+                self.term_search_index = 0;
+                self.term_search_matches.clear();
+                self.clear_all_caches();
+                Task::none()
+            }
             Message::JumpToBottom(idx) => {
                 if let Some(&id) = self.panes.get(idx) {
                     if let Some(session) = self.session_by_id(id) {
@@ -1228,6 +1399,35 @@ impl TerminalPlus {
                 ..
             })) => self.handle_key_press(key, modifiers, text.as_deref()),
             Message::KeyboardEvent(_) => Task::none(),
+            Message::ScreenshotCaptured(filename, shot) => {
+                let Some(cs) = self.capture_state.as_mut() else {
+                    return Task::none();
+                };
+                let _ = std::fs::create_dir_all(&cs.dir);
+                let mut ppm =
+                    format!("P6\n{} {}\n255\n", shot.size.width, shot.size.height).into_bytes();
+                ppm.reserve((shot.size.width * shot.size.height * 3) as usize);
+                for px in shot.bytes.chunks_exact(4) {
+                    ppm.extend_from_slice(&px[..3]);
+                }
+                let _ = std::fs::write(cs.dir.join(&filename), ppm);
+                cs.in_flight = false;
+                cs.stage += 1;
+                cs.stage_at = Instant::now();
+                match cs.stage {
+                    2 => {
+                        self.overlay = ActiveOverlay::Usage;
+                        self.usage_range = UsageRange::Days30;
+                        self.rebuild_report();
+                        Task::none()
+                    }
+                    3 => {
+                        self.overlay = ActiveOverlay::Palette;
+                        Task::none()
+                    }
+                    _ => iced::exit(),
+                }
+            }
         }
     }
 
@@ -1274,6 +1474,9 @@ impl TerminalPlus {
                 Key::Character("j") | Key::Character("J") => {
                     return self.update(Message::ToggleWork);
                 }
+                Key::Character("f") | Key::Character("F") => {
+                    return self.update(Message::ToggleTermSearch);
+                }
                 Key::Character(",") => {
                     self.overlay = if self.overlay == ActiveOverlay::Settings {
                         ActiveOverlay::None
@@ -1315,6 +1518,10 @@ impl TerminalPlus {
             return Task::none();
         }
 
+        if self.term_search_open && matches!(key, Key::Named(Named::Escape)) {
+            return self.update(Message::CloseTermSearch);
+        }
+
         // Clear active text selection on typing
         if self.pane_selections.remove(&self.focused_pane).is_some() {
             self.clear_pane_cache(self.focused_pane);
@@ -1350,6 +1557,9 @@ impl TerminalPlus {
     pub fn subscription(&self) -> Subscription<Message> {
         let tick = iced::time::every(Duration::from_millis(33)).map(|_| Message::Tick);
         let events = event::listen_with(|event, status, _id| match &event {
+            Event::Keyboard(keyboard::Event::ModifiersChanged(mods)) => {
+                Some(Message::ModifiersChanged(*mods))
+            }
             Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                 let is_global = modifiers.control()
                     && matches!(
@@ -1366,6 +1576,8 @@ impl TerminalPlus {
                             | Key::Character("U")
                             | Key::Character("j")
                             | Key::Character("J")
+                            | Key::Character("f")
+                            | Key::Character("F")
                             | Key::Character(",")
                             | Key::Character("\\")
                             | Key::Character("|")
@@ -1475,14 +1687,44 @@ impl TerminalPlus {
                             .get(idx)
                             .unwrap_or(&self.canvas_caches[0]);
                         let selection = self.pane_selections.get(&idx).copied();
+                        let is_focused = idx == self.focused_pane;
+                        let matches: &[(usize, usize, usize)] =
+                            if self.term_search_open && is_focused {
+                                &self.term_search_matches
+                            } else {
+                                &[]
+                            };
+                        let active_match = if matches.is_empty() {
+                            0
+                        } else {
+                            self.term_search_index % matches.len()
+                        };
+                        let search_overlay = if self.term_search_open && is_focused {
+                            Some(SearchOverlay {
+                                query: &self.term_search_query,
+                                input_id: self.term_search_input_id.clone(),
+                                current: active_match,
+                                total: matches.len(),
+                                on_change: Message::TermSearchChanged,
+                                on_next: Message::TermSearchNext,
+                                on_prev: Message::TermSearchPrev,
+                                on_close: Message::CloseTermSearch,
+                            })
+                        } else {
+                            None
+                        };
                         let pane_el = view_terminal_pane(
                             session,
                             idx,
-                            idx == self.focused_pane,
+                            is_focused,
+                            self.ctrl_held,
                             self.config.font_size,
                             self.terminal_font,
                             self.config.terminal_theme,
                             selection,
+                            matches,
+                            active_match,
+                            search_overlay,
                             toast_ref,
                             cache,
                             Message::Terminal,

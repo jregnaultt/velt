@@ -371,6 +371,104 @@ impl TerminalSession {
         }
         Some(((left, row), (right, row)))
     }
+
+    pub fn visible_rows_text(&self) -> Vec<String> {
+        let Ok(term) = self.term.lock() else {
+            return Vec::new();
+        };
+        let content = term.renderable_content();
+        let display_offset = content.display_offset as i32;
+        let screen_lines = term.screen_lines();
+        let cols = term.columns();
+        if screen_lines == 0 || cols == 0 {
+            return Vec::new();
+        }
+        let mut grid_chars = vec![vec![' '; cols]; screen_lines];
+        for indexed in content.display_iter {
+            let r = indexed.point.line.0 + display_offset;
+            let c = indexed.point.column.0;
+            if r >= 0 && (r as usize) < screen_lines && c < cols {
+                let ch = indexed.cell.c;
+                grid_chars[r as usize][c] = if ch == '\0' { ' ' } else { ch };
+            }
+        }
+        grid_chars
+            .into_iter()
+            .map(|row_chars| row_chars.into_iter().collect())
+            .collect()
+    }
+
+    pub fn find_visible_matches(&self, query: &str) -> Vec<(usize, usize, usize)> {
+        let rows = self.visible_rows_text();
+        find_matches_in_rows(&rows, query)
+    }
+
+    pub fn url_at_cell(&self, col: usize, row: usize) -> Option<String> {
+        let rows = self.visible_rows_text();
+        let line = rows.get(row)?;
+        extract_url_at_col(line, col)
+    }
+}
+
+pub fn find_matches_in_rows(rows: &[String], query: &str) -> Vec<(usize, usize, usize)> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let needle_chars: Vec<char> = needle.chars().collect();
+    let nlen = needle_chars.len();
+    let mut matches = Vec::new();
+    for (r_idx, row) in rows.iter().enumerate() {
+        let row_chars: Vec<char> = row.to_lowercase().chars().collect();
+        if row_chars.len() < nlen {
+            continue;
+        }
+        let mut c = 0usize;
+        while c + nlen <= row_chars.len() {
+            if row_chars[c..c + nlen] == needle_chars[..] {
+                matches.push((r_idx, c, c + nlen - 1));
+                c += nlen;
+            } else {
+                c += 1;
+            }
+        }
+    }
+    matches
+}
+
+pub fn extract_url_at_col(line: &str, col: usize) -> Option<String> {
+    let chars: Vec<char> = line.chars().collect();
+    if col >= chars.len() {
+        return None;
+    }
+
+    let mut i = 0usize;
+    while i < chars.len() {
+        let remaining: String = chars[i..].iter().take(8).collect();
+        if remaining.starts_with("https://") || remaining.starts_with("http://") {
+            let start = i;
+            let mut end = i;
+            while end < chars.len() && !chars[end].is_whitespace() {
+                end += 1;
+            }
+            while end > start
+                && matches!(
+                    chars[end - 1],
+                    ')' | ']' | '>' | ',' | '.' | ';' | '\'' | '"'
+                )
+            {
+                end -= 1;
+            }
+            if end > start && col >= start && col < end {
+                let url: String = chars[start..end].iter().collect();
+                return Some(url);
+            }
+            i = end.max(i + 1);
+        } else {
+            i += 1;
+        }
+    }
+    None
 }
 
 pub fn normalize_selection(a: (usize, usize), b: (usize, usize)) -> ((usize, usize), (usize, usize)) {
@@ -474,5 +572,25 @@ mod tests {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let stack = detect_tech_stack(&cwd);
         assert!(stack.contains(&"Rust"));
+    }
+
+    #[test]
+    fn finds_case_insensitive_matches_in_rows() {
+        let rows = vec![
+            "Running Cargo test on Velt".to_string(),
+            "VELT v0.1.0 ready".to_string(),
+        ];
+        let matches = find_matches_in_rows(&rows, "velt");
+        assert_eq!(matches, vec![(0, 22, 25), (1, 0, 3)]);
+    }
+
+    #[test]
+    fn extracts_url_at_column_and_trims_punctuation() {
+        let line = "See docs at (https://github.com/jregnaultt/velt). Thanks!";
+        assert_eq!(
+            extract_url_at_col(line, 15).as_deref(),
+            Some("https://github.com/jregnaultt/velt")
+        );
+        assert_eq!(extract_url_at_col(line, 4), None);
     }
 }
