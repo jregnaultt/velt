@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="88 128 336 256" width="336" height="256" role="img" aria-label="Velt Mark">
+  <defs>
+    <linearGradient id="veltBlue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3B82F6" />
+      <stop offset="100%" stop-color="#2563EB" />
+    </linearGradient>
+  </defs>
+  <polygon points="103.5,145.4 151.2,145.4 213.4,282.0 188.1,329.0" fill="#E6E8EC" />
+  <polygon points="195.3,366.6 278.4,211.9 302.3,256.0 243.0,366.6" fill="#E6E8EC" />
+  <polygon points="269.0,145.4 317.4,145.4 378.2,256.0 317.4,366.6 269.0,366.6 329.7,256.0" fill="#E6E8EC" />
+  <polygon points="317.4,145.4 346.4,145.4 407.1,256.0 346.4,366.6 317.4,366.6 378.2,256.0" fill="url(#veltBlue)" />
+  <rect x="381.8" y="340.6" width="26.0" height="26.0" rx="2.5" fill="#F59E0B" />
+</svg>

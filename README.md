@@ -1,13 +1,6 @@
 <div align="center">
 
-```text
-██╗   ██╗███████╗██╗  ████████╗
-██║   ██║██╔════╝██║  ╚══██╔══╝
-██║   ██║█████╗  ██║     ██║
-╚██╗ ██╔╝██╔══╝  ██║     ██║
- ╚████╔╝ ███████╗███████╗██║
-  ╚═══╝  ╚══════╝╚══════╝╚═╝
-```
+<img src="assets/branding/velt-banner.svg" alt="Velt — Native GPU Terminal" width="100%" />
 
 ### Native GPU-Accelerated Terminal for Developers, AI Agents & Atlassian/Git Workflows
 
@@ -27,8 +20,8 @@
 
 Modern AI-assisted development deserves a terminal that feels instantaneous, respects your RAM, and unifies your **shells**, **AI agents**, and **Jira / Bitbucket / GitHub** workflow in one native GPU window.
 
-![Velt — Agent usage dashboard](assets/screenshots/agent-usage.png)
-*Velt's `Agent usage` dashboard rendering real local AI logs on GPU.*
+![Velt — Native GPU Terminal](assets/screenshots/terminal.png)
+*Velt's native GPU terminal with Git Bash, live Git branch detection, and AI agent status.*
 
 ### Layout overview
 
@@ -48,6 +41,15 @@ Modern AI-assisted development deserves a terminal that feels instantaneous, res
 | [AGY] [Codex]    |  [bash] my-app  git:main  [Rust]                118x34 Ctrl+K  |
 +------------------+----------------------------------------------------------------+
 ```
+
+---
+
+## Screenshots
+
+| **Agent Usage Dashboard (`Ctrl+U`)** | **Command Palette (`Ctrl+K`)** |
+| :---: | :---: |
+| ![Velt — Agent usage dashboard](assets/screenshots/agent-usage.png) | ![Velt — Command Palette](assets/screenshots/command-palette.png) |
+| *Local token telemetry, activity heatmap, and model breakdown* | *Keyboard-first launcher for shells, splits, Git snippets & hubs* |
 
 ---
 

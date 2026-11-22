@@ -86,6 +86,22 @@ pub enum Message {
     CloseTermSearch,
     KeyboardEvent(Event),
     PasteClipboard(Option<String>),
+    ScreenshotCaptured(String, iced::window::Screenshot),
+}
+
+struct CaptureState {
+    dir: PathBuf,
+    stage: u8,
+    stage_at: Instant,
+    in_flight: bool,
+}
+
+fn capture_window_task(filename: &'static str) -> Task<Message> {
+    iced::window::get_oldest().then(move |opt| match opt {
+        Some(id) => iced::window::screenshot(id)
+            .map(move |shot| Message::ScreenshotCaptured(filename.to_string(), shot)),
+        None => Task::none(),
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +166,7 @@ pub struct TerminalPlus {
     last_dirty_versions: HashMap<SessionId, u64>,
     last_context_refresh: Instant,
     default_cwd: PathBuf,
+    capture_state: Option<CaptureState>,
 }
 
 impl TerminalPlus {
@@ -219,6 +236,12 @@ impl TerminalPlus {
             last_dirty_versions: HashMap::new(),
             last_context_refresh: Instant::now(),
             default_cwd,
+            capture_state: std::env::var_os("VELT_CAPTURE_DIR").map(|dir| CaptureState {
+                dir: PathBuf::from(dir),
+                stage: 0,
+                stage_at: Instant::now(),
+                in_flight: false,
+            }),
         };
 
         let shell = app.config.default_shell;
@@ -570,6 +593,40 @@ impl TerminalPlus {
                 }
                 if refresh_search {
                     self.refresh_term_search_matches();
+                }
+                let mut send_demo_cmd = false;
+                if let Some(cs) = self.capture_state.as_mut() {
+                    if !cs.in_flight {
+                        let elapsed = cs.stage_at.elapsed();
+                        match cs.stage {
+                            0 if elapsed >= Duration::from_millis(900) => {
+                                send_demo_cmd = true;
+                                cs.stage = 1;
+                                cs.stage_at = Instant::now();
+                            }
+                            1 if elapsed >= Duration::from_millis(1600) => {
+                                cs.in_flight = true;
+                                return capture_window_task("terminal.ppm");
+                            }
+                            2 if elapsed >= Duration::from_millis(700) => {
+                                cs.in_flight = true;
+                                return capture_window_task("agent-usage.ppm");
+                            }
+                            3 if elapsed >= Duration::from_millis(600) => {
+                                cs.in_flight = true;
+                                return capture_window_task("command-palette.ppm");
+                            }
+                            4.. => return iced::exit(),
+                            _ => {}
+                        }
+                    }
+                }
+                if send_demo_cmd {
+                    if let Some(id) = self.panes.get(self.focused_pane).copied() {
+                        if let Some(session) = self.session_by_id(id) {
+                            session.write_bytes(b"git status -sb\r");
+                        }
+                    }
                 }
                 Task::none()
             }
@@ -1342,6 +1399,35 @@ impl TerminalPlus {
                 ..
             })) => self.handle_key_press(key, modifiers, text.as_deref()),
             Message::KeyboardEvent(_) => Task::none(),
+            Message::ScreenshotCaptured(filename, shot) => {
+                let Some(cs) = self.capture_state.as_mut() else {
+                    return Task::none();
+                };
+                let _ = std::fs::create_dir_all(&cs.dir);
+                let mut ppm =
+                    format!("P6\n{} {}\n255\n", shot.size.width, shot.size.height).into_bytes();
+                ppm.reserve((shot.size.width * shot.size.height * 3) as usize);
+                for px in shot.bytes.chunks_exact(4) {
+                    ppm.extend_from_slice(&px[..3]);
+                }
+                let _ = std::fs::write(cs.dir.join(&filename), ppm);
+                cs.in_flight = false;
+                cs.stage += 1;
+                cs.stage_at = Instant::now();
+                match cs.stage {
+                    2 => {
+                        self.overlay = ActiveOverlay::Usage;
+                        self.usage_range = UsageRange::Days30;
+                        self.rebuild_report();
+                        Task::none()
+                    }
+                    3 => {
+                        self.overlay = ActiveOverlay::Palette;
+                        Task::none()
+                    }
+                    _ => iced::exit(),
+                }
+            }
         }
     }
 
